@@ -1,0 +1,11 @@
+# Root-owned settings sourced by scripts/manage.
+# Space-separated Linux usernames allowed to use each launcher.
+# Replace "your-user" with your normal login name. Include "codex" if that
+# separate Linux account also needs to run the Codex launcher through WireGuard.
+AGY_USERS='your-user'
+CODEX_USERS='your-user codex'
+
+# Keep ROUTE_MARK aligned with WG_APP_MARK in bpf/mark-sockets.bpf.c.
+ROUTE_TABLE='51821'
+ROUTE_MARK='0x57474150'
+ROUTE_PRIORITY='10000'

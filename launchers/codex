@@ -1,0 +1,28 @@
+#!/bin/sh
+# Move Codex into its WireGuard-routed cgroup, then replace this wrapper.
+set -eu
+
+user_name=$(id -un)
+app_cgroup=/sys/fs/cgroup/wg-app-route/codex-$user_name
+ready_file=/run/wg-app-route/wg0.ready
+real_command=/usr/bin/codex
+
+if [ "$(id -u)" -eq 0 ]; then
+	printf '%s\n' 'codex: run this launcher as your regular user.' >&2
+	exit 1
+fi
+if [ ! -r "$ready_file" ]; then
+	printf '%s\n' 'codex: start wg0 before launching Codex.' >&2
+	exit 1
+fi
+if [ ! -w "$app_cgroup/cgroup.procs" ]; then
+	printf '%s\n' 'codex: cgroup is unavailable; restart wg0 as root.' >&2
+	exit 1
+fi
+if [ ! -x "$real_command" ]; then
+	printf '%s\n' "codex: edit real_command in this launcher (not executable: $real_command)." >&2
+	exit 1
+fi
+
+printf '%s\n' "$$" > "$app_cgroup/cgroup.procs"
+exec "$real_command" "$@"

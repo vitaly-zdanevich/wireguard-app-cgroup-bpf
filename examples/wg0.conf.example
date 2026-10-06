@@ -1,0 +1,14 @@
+[Interface]
+PrivateKey = <copy from your VPN provider's WireGuard config>
+Address = <copy all addresses from your VPN provider's config>
+Table = off
+PostUp = /usr/local/libexec/wg-app-route/manage up %i
+PreDown = /usr/local/libexec/wg-app-route/manage down %i
+
+[Peer]
+PublicKey = <copy from your VPN provider's config>
+# Optional: uncomment and copy this only if the provider's config includes it.
+# PresharedKey = <copy from your VPN provider's config>
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = <copy host:port from your VPN provider's config>
+# Copy PersistentKeepalive only if it is present in the provider's config.

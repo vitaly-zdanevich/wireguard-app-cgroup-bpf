@@ -1,0 +1,170 @@
+#!/bin/sh
+# Add fail-closed policy routing for the agy and Codex cgroups.
+set -eu
+set -f
+
+die()
+{
+	printf '%s\n' "wg-app-route: $*" >&2
+	exit 1
+}
+
+action=${1-}
+interface=${2:-wg0}
+[ -n "$action" ] || die 'usage: manage up|down interface'
+config_file=${WG_APP_ROUTE_CONFIG:-/etc/wg-app-route.conf}
+
+[ -r "$config_file" ] || die "Missing root-owned config file: $config_file"
+# The config file is shell syntax and must not be writable by unprivileged users.
+. "$config_file"
+
+agy_users=${AGY_USERS-}
+codex_users=${CODEX_USERS-}
+[ -n "$agy_users" ] || die 'Set AGY_USERS in /etc/wg-app-route.conf.'
+[ -n "$codex_users" ] || die 'Set CODEX_USERS in /etc/wg-app-route.conf.'
+route_table=${ROUTE_TABLE:-51821}
+route_mark=${ROUTE_MARK:-0x57474150}
+route_priority=${ROUTE_PRIORITY:-10000}
+cgroup_base=${CGROUP_BASE:-/sys/fs/cgroup/wg-app-route}
+pin_dir=${BPF_PIN_DIR:-/sys/fs/bpf/wg-app-route}
+ready_dir=${READY_DIR:-/run/wg-app-route}
+ready_file=$ready_dir/$interface.ready
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+bpf_object=${BPF_OBJECT:-$script_dir/mark-sockets.bpf.o}
+
+require_root()
+{
+	[ "$(id -u)" -eq 0 ] || die 'WireGuard hooks must run as root.'
+	for app_user in $agy_users $codex_users; do
+		case "$app_user" in
+			''|*[!a-zA-Z0-9_.-]*) die "Invalid Linux username: $app_user" ;;
+		esac
+		id -u "$app_user" >/dev/null 2>&1 || die "Unknown Linux user: $app_user"
+	done
+}
+
+require_cgroup_v2()
+{
+	[ -f /sys/fs/cgroup/cgroup.controllers ] || die 'This setup requires cgroup v2 at /sys/fs/cgroup.'
+}
+
+create_cgroups()
+{
+	mkdir -p "$cgroup_base"
+	for app_user in $agy_users; do
+		group=$cgroup_base/agy-$app_user
+		mkdir -p "$group"
+		chown "$app_user" "$group/cgroup.procs"
+	done
+	for app_user in $codex_users; do
+		group=$cgroup_base/codex-$app_user
+		mkdir -p "$group"
+		chown "$app_user" "$group/cgroup.procs"
+	done
+}
+
+mount_bpffs()
+{
+	if ! awk '$3 == "bpf" && $2 == "/sys/fs/bpf" { found = 1 } END { exit !found }' /proc/mounts; then
+		mkdir -p /sys/fs/bpf
+		mount -t bpf bpffs /sys/fs/bpf || die 'Could not mount bpffs at /sys/fs/bpf.'
+	fi
+	mkdir -p "$pin_dir"
+}
+
+load_programs()
+{
+	command -v bpftool >/dev/null 2>&1 || die 'bpftool is required.'
+	[ -r "$bpf_object" ] || die "Missing BPF object: $bpf_object (build and install it first)."
+	if [ ! -e "$pin_dir/route_connect4" ]; then
+		bpftool prog loadall "$bpf_object" "$pin_dir" || die 'Could not load the BPF programs.'
+	fi
+	for program in route_connect4 route_connect6 route_sendmsg4 route_sendmsg6; do
+		[ -e "$pin_dir/$program" ] || die "The BPF program $program was not pinned."
+	done
+}
+
+attach_program()
+{
+	cgroup=$1
+	attach_type=$2
+	program=$3
+	program_path=$pin_dir/$program
+	bpftool cgroup detach "$cgroup" "$attach_type" pinned "$program_path" >/dev/null 2>&1 || true
+	bpftool cgroup attach "$cgroup" "$attach_type" pinned "$program_path" || die "Could not attach $program to $cgroup."
+}
+
+install_socket_marking()
+{
+	for app_user in $agy_users; do
+		group=$cgroup_base/agy-$app_user
+		attach_program "$group" cgroup_inet4_connect route_connect4
+		attach_program "$group" cgroup_inet6_connect route_connect6
+		attach_program "$group" cgroup_udp4_sendmsg route_sendmsg4
+		attach_program "$group" cgroup_udp6_sendmsg route_sendmsg6
+	done
+	for app_user in $codex_users; do
+		group=$cgroup_base/codex-$app_user
+		attach_program "$group" cgroup_inet4_connect route_connect4
+		attach_program "$group" cgroup_inet6_connect route_connect6
+		attach_program "$group" cgroup_udp4_sendmsg route_sendmsg4
+		attach_program "$group" cgroup_udp6_sendmsg route_sendmsg6
+	done
+}
+
+peer_has_allowed_ip()
+{
+	wg show "$interface" allowed-ips | tr ',' ' ' | awk -v wanted="$1" '
+		{ for (i = 2; i <= NF; i++) if ($i == wanted) found = 1 }
+		END { exit !found }
+	'
+}
+
+install_route_rules()
+{
+	if ! ip -4 rule show | grep -Fq "fwmark $route_mark lookup $route_table"; then
+		ip -4 rule add priority "$route_priority" fwmark "$route_mark" table "$route_table"
+	fi
+	if ! ip -4 rule show | grep -Fq "fwmark $route_mark prohibit"; then
+		ip -4 rule add priority "$((route_priority + 1))" fwmark "$route_mark" prohibit
+	fi
+	if ! ip -6 rule show | grep -Fq "fwmark $route_mark lookup $route_table"; then
+		ip -6 rule add priority "$route_priority" fwmark "$route_mark" table "$route_table"
+	fi
+	if ! ip -6 rule show | grep -Fq "fwmark $route_mark prohibit"; then
+		ip -6 rule add priority "$((route_priority + 1))" fwmark "$route_mark" prohibit
+	fi
+}
+
+case "$action" in
+	up)
+	require_root
+	require_cgroup_v2
+	[ "$route_mark" = '0x57474150' ] || die 'Keep ROUTE_MARK at 0x57474150 unless WG_APP_MARK is also changed in the BPF source.'
+	mkdir -p "$ready_dir"
+	rm -f "$ready_file"
+	create_cgroups
+	mount_bpffs
+	load_programs
+	install_socket_marking
+	install_route_rules
+	peer_has_allowed_ip '0.0.0.0/0' || die "Peer on $interface must allow 0.0.0.0/0."
+	ip -4 route replace default dev "$interface" table "$route_table"
+	if peer_has_allowed_ip '::/0'; then
+		ip -6 route replace default dev "$interface" table "$route_table"
+	else
+		ip -6 route del default dev "$interface" table "$route_table" 2>/dev/null || true
+	fi
+	umask 022
+	: > "$ready_file"
+	;;
+	down)
+	require_root
+	rm -f "$ready_file"
+	ip -4 route del default dev "$interface" table "$route_table" 2>/dev/null || true
+	ip -6 route del default dev "$interface" table "$route_table" 2>/dev/null || true
+	;;
+	*)
+	die "Unknown action: $action (expected up or down)."
+	;;
+esac
