@@ -1,0 +1,12 @@
+/*
+ * Allow members of wg-app-route to run only the root-owned cgroup helper.
+ * The helper validates the caller account, PID owner, launcher path, and app.
+ */
+polkit.addRule(function(action, subject) {
+	if (action.id == 'org.freedesktop.policykit.exec' &&
+		action.lookup('program') == '/usr/local/libexec/wg-app-route/move-pid' &&
+		action.lookup('user') == 'root' &&
+		subject.isInGroup('wg-app-route')) {
+		return polkit.Result.YES;
+	}
+});

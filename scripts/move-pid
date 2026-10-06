@@ -1,0 +1,64 @@
+#!/bin/sh
+# Move only the calling user's configured launcher into its WireGuard cgroup.
+set -eu
+set -f
+
+die()
+{
+	printf '%s\n' "wg-app-route-move: $*" >&2
+	exit 1
+}
+
+[ "$(id -u)" -eq 0 ] || die 'This helper must be run through its polkit authorization.'
+[ "$#" -eq 2 ] || die 'usage: move-pid app pid'
+
+app=$1
+pid=$2
+case "$app" in
+	agy|codex) ;;
+	*) die 'App must be agy or codex.' ;;
+esac
+case "$pid" in
+	''|*[!0-9]*) die 'PID must be numeric.' ;;
+esac
+
+caller_uid=${PKEXEC_UID-}
+case "$caller_uid" in
+	''|*[!0-9]*) die 'Missing numeric PKEXEC_UID; invoke this helper through pkexec.' ;;
+esac
+
+config_file=/etc/wg-app-route.conf
+[ -r "$config_file" ] || die "Missing root-owned config file: $config_file"
+. "$config_file"
+
+if [ "$app" = agy ]; then
+	configured_users=${AGY_USERS-}
+else
+	configured_users=${CODEX_USERS-}
+fi
+
+user_name=$(id -nu "$caller_uid")
+case "$user_name" in
+	''|*[!a-zA-Z0-9_.-]*) die 'Invalid account name for pkexec caller.' ;;
+esac
+case " $configured_users " in
+	*" $user_name "*) ;;
+	*) die 'The pkexec caller is not configured for this app.' ;;
+esac
+
+proc_dir=/proc/$pid
+[ -r "$proc_dir/status" ] || die 'The launcher process is no longer available.'
+proc_uid=$(awk '$1 == "Uid:" { print $2; exit }' "$proc_dir/status")
+[ "$proc_uid" = "$caller_uid" ] || die 'The launcher PID does not belong to the pkexec caller.'
+
+home_dir=$(getent passwd "$user_name" | awk -F: 'NR == 1 { print $6 }')
+[ -n "$home_dir" ] || die 'Could not determine the launcher account home.'
+launcher=$home_dir/.local/bin/$app
+if ! tr '\000' '\n' < "$proc_dir/cmdline" | grep -Fxq "$launcher"; then
+	die 'The PID is not running the configured app launcher.'
+fi
+
+cgroup_base=${CGROUP_BASE:-/sys/fs/cgroup/wg-app-route}
+target=$cgroup_base/$app-$user_name/cgroup.procs
+[ -e "$target" ] || die 'The app routing cgroup is unavailable; restart wg0.'
+printf '%s\n' "$pid" > "$target"

@@ -15,7 +15,7 @@ if [ ! -r "$ready_file" ]; then
 	printf '%s\n' 'codex: start wg0 before launching Codex.' >&2
 	exit 1
 fi
-if [ ! -w "$app_cgroup/cgroup.procs" ]; then
+if [ ! -e "$app_cgroup/cgroup.procs" ]; then
 	printf '%s\n' 'codex: cgroup is unavailable; restart wg0 as root.' >&2
 	exit 1
 fi
@@ -24,5 +24,8 @@ if [ ! -x "$real_command" ]; then
 	exit 1
 fi
 
-printf '%s\n' "$$" > "$app_cgroup/cgroup.procs"
+if ! pkexec --disable-internal-agent /usr/local/libexec/wg-app-route/move-pid codex "$$"; then
+	printf '%s\n' 'codex: polkit authorization for the cgroup move is not configured.' >&2
+	exit 1
+fi
 exec "$real_command" "$@"

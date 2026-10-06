@@ -12,6 +12,17 @@ This is a Linux administrator recipe. It supports one or more configured Linux
 accounts and requires a provider WireGuard profile with full-tunnel peer
 `AllowedIPs`.
 
+## Belarus use case
+
+This setup is relevant to users in Belarus who cannot access Codex or Google
+Antigravity directly. As of 2026-10-06, Belarus is not listed on OpenAI's
+[supported countries page](https://help.openai.com/en/articles/7947663-chatgpt-supported-countries)
+or Google Antigravity's [geographical availability page](https://antigravity.google/docs/faq).
+Availability can change. Routing traffic through a VPN changes its network exit
+point, but does not change account eligibility. OpenAI says access from outside
+its supported countries may result in an account being blocked or suspended;
+check current provider requirements before using this setup.
+
 ## Easier option for Windscribe users
 
 Windscribe's Linux app advertises per-app split tunneling and support for
@@ -66,13 +77,68 @@ fail-closed for the socket operations covered by the hooks.
 - `wireguard-tools`, `iproute2`, `bpftool`, `clang`, and libbpf headers.
 - A WireGuard provider profile with `AllowedIPs = 0.0.0.0/0`. Include
   `::/0` when the provider supports IPv6.
+- `pkexec` with an active polkit authority on the system message bus. The
+  example launchers use this for the one root-only cgroup move; they do not
+  require `sudo`.
 - Root access to install the helper and configure the interface.
 
 Package names vary by distribution. The kernel must allow loading BPF programs;
 some distributions require enabling BPF in their kernel config or granting the
 relevant capabilities to the service that starts WireGuard.
 
+## Install WireGuard tools
+
+Install the distribution's WireGuard package before setting up `wg0`. These
+packages provide `wg` and `wg-quick`, which this guide uses. The commands below
+follow the [official WireGuard installation instructions](https://www.wireguard.com/install/).
+If `sudo` is not installed, run administrative commands from a root shell; this
+guide does not require installing `sudo` for app routing.
+
+### Ubuntu
+
+```sh
+sudo apt update
+sudo apt install wireguard
+```
+
+### Debian
+
+```sh
+sudo apt update
+sudo apt install wireguard
+```
+
+For Debian releases older than Bullseye, enable the appropriate backports
+repository first.
+
+### Arch Linux
+
+```sh
+sudo pacman -S wireguard-tools
+```
+
+WireGuard is built into Linux kernels 5.6 and newer. For older kernels, use the
+matching `wireguard-lts` or `wireguard-dkms` package and kernel headers.
+
+### Fedora
+
+```sh
+sudo dnf install wireguard-tools
+```
+
+### Gentoo
+
+```sh
+emerge --ask net-vpn/wireguard-tools
+```
+
+The Gentoo ebuild's `wg-quick` USE flag controls installation of `wg-quick`;
+check that it is enabled if the command is missing.
+
 ## Install
+
+The commands below use `sudo` for brevity. If `sudo` is not installed, run
+them from a root shell instead.
 
 ### 1. Build and install the BPF program and routing helper
 
@@ -82,6 +148,7 @@ From this repository:
 ./scripts/build-bpf.sh
 sudo install -d -o root -g root -m 0755 /usr/local/libexec/wg-app-route
 sudo install -o root -g root -m 0755 scripts/manage /usr/local/libexec/wg-app-route/manage
+sudo install -o root -g root -m 0755 scripts/move-pid /usr/local/libexec/wg-app-route/move-pid
 sudo install -o root -g root -m 0644 build/mark-sockets.bpf.o /usr/local/libexec/wg-app-route/mark-sockets.bpf.o
 sudo install -o root -g root -m 0644 examples/wg-app-route.conf.example /etc/wg-app-route.conf
 sudoedit /etc/wg-app-route.conf
@@ -91,8 +158,42 @@ Set `AGY_USERS` and `CODEX_USERS` to space-separated Linux account names. For
 example, set `AGY_USERS='your-user'` and `CODEX_USERS='your-user codex'`
 when your normal account and a separate Linux account named `codex` should
 both run Codex through the VPN. The helper creates one cgroup per app and
-account, then grants that account permission to enter its cgroup. Remove
-accounts from these lists when they should not use the VPN.
+account and gives it write access to the destination `cgroup.procs` file.
+Remove accounts from these lists when they should not use the VPN.
+
+### 2. Allow the launcher to move its own process
+
+On cgroup v2, an unprivileged process cannot always move itself by writing to
+the destination `cgroup.procs`: the kernel also checks permissions at the
+common ancestor of its current and destination cgroups. This guide uses a
+root-owned `move-pid` helper to perform that one operation. The helper checks
+the calling account, verifies that the PID belongs to that account and is
+running the expected launcher, and only moves it into the app cgroup permitted
+by `/etc/wg-app-route.conf`. The app itself continues running as its original
+Linux user.
+
+The launchers call the helper through `pkexec`. A small polkit rule authorizes
+members of the `wg-app-route` group to run only this helper as root. This does
+not grant a root shell or general root commands. The helper still checks that
+the caller and PID match a configured app launcher. Do not add a service
+account such as `codex` to `wheel` just to make `su` work.
+
+Create the group, add every account listed in `AGY_USERS` or `CODEX_USERS`, and
+install the example rule:
+
+```sh
+sudo groupadd --system wg-app-route
+sudo usermod -aG wg-app-route your-user
+sudo usermod -aG wg-app-route codex
+sudo install -o root -g root -m 0644 examples/wg-app-route.polkit.rules.example /etc/polkit-1/rules.d/50-wg-app-route.rules
+```
+
+Omit the `usermod` command for `codex` if you do not use a separate account.
+After changing group membership, start a new login session for each account.
+The rule directory is provided by polkit; if it is missing, install the
+distribution's polkit package. The system polkit authority and system message
+bus must be running. Keep the `move-pid` helper owned by root and not writable
+by app users.
 
 Keep `ROUTE_MARK` at `0x57474150` unless you also update `WG_APP_MARK` in the BPF
 source and rebuild the object. The config is shell syntax, so keep it owned by
@@ -101,7 +202,7 @@ root and unwritable by unprivileged users.
 The build command requires `clang` with a BPF target and the libbpf development
 headers. `bpftool` is used at runtime to load and attach the object.
 
-### 2. Create a provider profile for `wg0`
+### 3. Create a provider profile for `wg0`
 
 Copy your provider's valid WireGuard profile to
 `/etc/wireguard/wg0.conf`. Use
@@ -136,7 +237,7 @@ The WireGuard profile and routing-helper config stay system-wide. Do not copy
 `codex` to `CODEX_USERS` in `/etc/wg-app-route.conf`; the root helper creates
 and grants access to the matching cgroup when `wg0` starts.
 
-### 3. Install and configure the launchers
+### 4. Install and configure the launchers
 
 Find the real executable paths before placing these wrappers on `PATH`.
 Edit `real_command` in each launcher to point to the installed application
@@ -209,7 +310,7 @@ tokens or auth files from another account. The official
 [Codex config guide](https://developers.openai.com/codex/config-basic) describes
 the per-user configuration location.
 
-### 4. Start and stop the tunnel
+### 5. Start and stop the tunnel
 
 Start the profile as root, using your system's service manager or:
 
@@ -292,6 +393,9 @@ shell alone does not move a running Codex process into the cgroup.
 
 ## Related reading
 
+- [Official WireGuard installation instructions](https://www.wireguard.com/install/)
+- [pkexec manual](https://polkit.pages.freedesktop.org/polkit/pkexec.1.html)
+- [polkit authorization rules](https://polkit.pages.freedesktop.org/polkit/polkit.8.html)
 - [WireGuard quick start](https://www.wireguard.com/quickstart/)
 - [`wg-quick(8)`](https://man7.org/linux/man-pages/man8/wg-quick.8.html), including `Table = off` and hooks
 - [`ip-rule(8)`](https://man7.org/linux/man-pages/man8/ip-rule.8.html)
@@ -302,6 +406,8 @@ shell alone does not move a running Codex process into the cgroup.
 - [Windscribe WireGuard config instructions](https://windscribe.com/knowledge-base/articles/where-do-i-access-my-wireguard-configs)
 - [Windscribe Linux features](https://windscribe.com/features/linux)
 - [Codex user configuration](https://developers.openai.com/codex/config-basic)
+- [OpenAI supported countries](https://help.openai.com/en/articles/7947663-chatgpt-supported-countries)
+- [Google Antigravity geographic availability](https://antigravity.google/docs/faq)
 - [Process-scoped cgroup/eBPF route research: ProcRoute (2026)](https://arxiv.org/abs/2604.16080)
 - [WireGuard with network namespaces, an alternative design](https://www.procustodibus.com/blog/2023/04/wireguard-netns-for-specific-apps/)
 
