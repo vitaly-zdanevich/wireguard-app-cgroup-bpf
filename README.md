@@ -155,10 +155,12 @@ sudoedit /etc/wg-app-route.conf
 ```
 
 Set `AGY_USERS` and `CODEX_USERS` to space-separated Linux account names. For
-example, set `AGY_USERS='your-user'` and `CODEX_USERS='your-user codex'`
-when your normal account and a separate Linux account named `codex` should
-both run Codex through the VPN. The helper creates one cgroup per app and
-account and gives it write access to the destination `cgroup.procs` file.
+example, set `AGY_USERS='your-user'` and
+`CODEX_USERS='your-user myuser'` when your regular account and a separate
+Linux account named `myuser` should both run Codex through the VPN. Replace
+these examples with your actual account names. The helper creates one cgroup
+per app and account and gives it write access to the destination
+`cgroup.procs` file.
 Remove accounts from these lists when they should not use the VPN.
 
 ### 2. Allow the launcher to move its own process
@@ -176,7 +178,7 @@ The launchers call the helper through `pkexec`. A small polkit rule authorizes
 members of the `wg-app-route` group to run only this helper as root. This does
 not grant a root shell or general root commands. The helper still checks that
 the caller and PID match a configured app launcher. Do not add a service
-account such as `codex` to `wheel` just to make `su` work.
+account to `wheel` just to make `su` work.
 
 Create the group, add every account listed in `AGY_USERS` or `CODEX_USERS`, and
 install the example rule:
@@ -184,16 +186,23 @@ install the example rule:
 ```sh
 sudo groupadd --system wg-app-route
 sudo usermod -aG wg-app-route your-user
-sudo usermod -aG wg-app-route codex
+sudo usermod -aG wg-app-route myuser
 sudo install -o root -g root -m 0644 examples/wg-app-route.polkit.rules.example /etc/polkit-1/rules.d/50-wg-app-route.rules
 ```
 
-Omit the `usermod` command for `codex` if you do not use a separate account.
+Replace each placeholder with an account listed in `AGY_USERS` or
+`CODEX_USERS`. Omit the `myuser` `usermod` command if you do not use a
+separate account.
 After changing group membership, start a new login session for each account.
 The rule directory is provided by polkit; if it is missing, install the
 distribution's polkit package. The system polkit authority and system message
 bus must be running. Keep the `move-pid` helper owned by root and not writable
 by app users.
+
+To run Codex as your regular account, start `codex` from that account's shell.
+The launcher keeps the same Linux user; it does not switch to `myuser` or
+need that account's password. Use the separate account's launcher only when
+you intend to run Codex as `myuser`.
 
 Keep `ROUTE_MARK` at `0x57474150` unless you also update `WG_APP_MARK` in the BPF
 source and rebuild the object. The config is shell syntax, so keep it owned by
@@ -233,9 +242,9 @@ the peer credentials from another interface such as `windscribe`, stop that
 other interface first.
 
 The WireGuard profile and routing-helper config stay system-wide. Do not copy
-`/etc/wireguard/wg0.conf` or its private key into `/home/codex`. Add
-`codex` to `CODEX_USERS` in `/etc/wg-app-route.conf`; the root helper creates
-and grants access to the matching cgroup when `wg0` starts.
+`/etc/wireguard/wg0.conf` or its private key into `/home/myuser`. Add `myuser`
+to `CODEX_USERS` if that account should use Codex; the root helper creates its
+cgroup when `wg0` starts.
 
 ### 4. Install and configure the launchers
 
@@ -260,7 +269,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 Install the launcher in each account's `~/.local/bin` and put that directory
 first in each account's `PATH`. Repeat the copy and `chmod` commands while
-logged in as the separate `codex` account, or use the explicit commands in
+logged in as the separate `myuser` account, or use the explicit commands in
 the next section. Open a new login shell and check that `type -a codex` lists
 the wrapper in `~/.local/bin` first. The wrapper moves its process into that
 account's `codex-<username>` cgroup before starting the real executable.
@@ -273,20 +282,20 @@ the wrapper was installed stays in its original cgroup. Opening a new shell
 only matters when it makes the wrapper available in `PATH`; start Codex from
 that shell so the wrapper can place the new process in the cgroup.
 
-#### Install the Codex launcher for Linux user `codex`
+#### Install the Codex launcher for Linux user `myuser`
 
-The wrapper must be present in `/home/codex/.local/bin/codex` and that
+The wrapper must be present in `/home/myuser/.local/bin/codex` and that
 directory must come before `/usr/bin` in the account's `PATH`. From the
 repository, install it with:
 
 ```sh
-sudo install -d -o codex -g "$(id -gn codex)" -m 0755 /home/codex/.local/bin
-sudo install -o codex -g "$(id -gn codex)" -m 0755 launchers/codex /home/codex/.local/bin/codex
-sudoedit /home/codex/.profile
+sudo install -d -o myuser -g "$(id -gn myuser)" -m 0755 /home/myuser/.local/bin
+sudo install -o myuser -g "$(id -gn myuser)" -m 0755 launchers/codex /home/myuser/.local/bin/codex
+sudoedit /home/myuser/.profile
 ```
 
-Add this line to the login startup file read by the `codex` account's shell
-(`/home/codex/.profile` is common when no `.bash_profile` or
+Add this line to the login startup file read by the `myuser` account's shell
+(`/home/myuser/.profile` is common when no `.bash_profile` or
 `.bash_login` takes precedence):
 
 ```sh
@@ -294,18 +303,18 @@ export PATH="$HOME/.local/bin:$PATH"
 ```
 
 The WireGuard config and BPF route helper are shared system files; they do not
-need copies in `/home/codex`. Routing also works without copying a Codex
+need copies in `/home/myuser`. Routing also works without copying a Codex
 settings file. Codex keeps user preferences in `~/.codex/config.toml`. If you
 want the same preferences, inspect the source first and copy only that file:
 
 ```sh
-sudo install -d -o codex -g "$(id -gn codex)" -m 0700 /home/codex/.codex
-sudo install -o codex -g "$(id -gn codex)" -m 0600 "$HOME/.codex/config.toml" /home/codex/.codex/config.toml
+sudo install -d -o myuser -g "$(id -gn myuser)" -m 0700 /home/myuser/.codex
+sudo install -o myuser -g "$(id -gn myuser)" -m 0600 "$HOME/.codex/config.toml" /home/myuser/.codex/config.toml
 ```
 
 The config can include MCP or provider settings, so review it before copying.
 After `wg0` is up, run `codex login` through the wrapper as Linux user
-`codex` to create that account's own login state. Do not copy authentication
+`myuser` to create that account's own login state. Do not copy authentication
 tokens or auth files from another account. The official
 [Codex config guide](https://developers.openai.com/codex/config-basic) describes
 the per-user configuration location.
@@ -345,7 +354,7 @@ ip -6 route show table 51821
 
 For a running Codex process, inspect `/proc/<PID>/cgroup`. Its cgroup path
 should end in `wg-app-route/codex-<username>` (for example,
-`wg-app-route/codex-codex` for the Linux account named `codex`). Check
+`wg-app-route/codex-myuser` for the Linux account named `myuser`). Check
 `type -a codex` in the shell used to launch it; the wrapper should be first.
 
 Compare `wg show wg0 transfer` before and after a Codex request. Increasing
