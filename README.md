@@ -282,6 +282,13 @@ the wrapper was installed stays in its original cgroup. Opening a new shell
 only matters when it makes the wrapper available in `PATH`; start Codex from
 that shell so the wrapper can place the new process in the cgroup.
 
+If starting `agy` prompts for a password, check that `type -a agy` lists
+`~/.local/bin/agy` first and that this is the current launcher from this
+repository. The launcher uses `pkexec` with the polkit rule above. An older
+copy that runs `su -c` will ask for a password; replace it with the current
+`launchers/agy`, set its `real_command` to the installed Antigravity CLI, and
+restart Antigravity.
+
 #### Install the Codex launcher for Linux user `myuser`
 
 The wrapper must be present in `/home/myuser/.local/bin/codex` and that
