@@ -26,8 +26,7 @@ check current provider requirements before using this setup.
 ## Easier option for Windscribe users
 
 [Windscribe](https://windscribe.com/)'s Linux app advertises per-app split tunneling and support for
-importing WireGuard configs. That can be simpler if using Windscribe's client
-is acceptable. This guide uses `wireguard-tools` and `wg-quick` directly.
+importing WireGuard configs - on non-free plan. This guide uses `wireguard-tools` and `wg-quick` directly.
 
 As checked on 2026-10-06, Windscribe lists Build-A-Plan from a $3/month
 minimum, with locations at $1/month each. Pro is $9/month or $69/year
