@@ -4,7 +4,7 @@ This guide routes traffic from the `agy` and `codex` commands through a
 WireGuard interface named `wg0`. Other applications continue to use the
 system's normal route.
 
-The example uses [cgroup](https://en.wikipedia.org/wiki/Cgroups) v2 and eBPF socket hooks to mark app sockets, then
+The example uses [cgroup](https://en.wikipedia.org/wiki/Cgroups) v2 and [eBPF](https://en.wikipedia.org/wiki/EBPF) socket hooks to mark app sockets, then
 Linux policy routing sends marked traffic through WireGuard. It does not use
 provider IP lists, which can change and can be shared with unrelated services.
 
