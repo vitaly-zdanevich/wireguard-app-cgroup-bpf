@@ -25,7 +25,7 @@ check current provider requirements before using this setup.
 
 ## Easier option for Windscribe users
 
-Windscribe's Linux app advertises per-app split tunneling and support for
+[Windscribe](https://windscribe.com/)'s Linux app advertises per-app split tunneling and support for
 importing WireGuard configs. That can be simpler if using Windscribe's client
 is acceptable. This guide uses `wireguard-tools` and `wg-quick` directly.
 
